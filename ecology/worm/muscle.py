@@ -107,7 +107,12 @@ def muscle_force(
     v_ce = v_mtu  # rigid tendon: CE velocity == MTU velocity
 
     f_active = activation * _fl(l_ce, p.l_opt, p.w) * _fv(v_ce, p.v_max) * p.F_max
-    f_passive = _pee(l_ce, p.l_opt, p.k_pee, p.pee_slack) * p.F_max
+
+    # Cap CE length for PEE to prevent runaway passive forces at extreme joint angles.
+    # Real muscles have a finite functional range; beyond ~1.5 × l_opt the fibre
+    # arrangement cannot sustain large passive forces.
+    l_ce_pee = jnp.clip(l_ce, 0.01 * p.l_opt, 1.5 * p.l_opt)
+    f_passive = _pee(l_ce_pee, p.l_opt, p.k_pee, p.pee_slack) * p.F_max
     return jnp.maximum(0.0, f_active + f_passive)
 
 
