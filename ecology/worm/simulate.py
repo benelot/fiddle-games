@@ -74,11 +74,11 @@ N_SEGMENTS    = 4
 # Muscle parameters — same for all three joints (tuned for worm scale)
 # ---------------------------------------------------------------------------
 MUSCLE = MuscleParams(
-    F_max   = 4.0,   # N  — moderate force for a ~50g worm
+    F_max   = 18.0,  # N  — strong enough to drive clear undulation
     l_opt   = 0.08,  # m  — optimal fibre length
     l_slack = 0.05,  # m  — tendon slack length
     v_max   = 0.6,   # m/s
-    r       = 0.022, # m  — moment arm
+    r       = 0.040, # m  — moment arm
     w       = 0.56,
     k_pee   = 0.35,
     pee_slack = 1.0,
@@ -244,14 +244,17 @@ def _render_gif(states, path: str, frame_dt: float):
         by = (1-t)**2*p0[1] + 2*(1-t)*t*(my-py*belly) + t**2*p1[1]
         return np.concatenate([tx, bx[::-1]]), np.concatenate([ty, by[::-1]])
 
+    # Visual radii: thinner than physics so joint gaps are apparent
+    VIS_RADII = [r * 0.55 for _, r in SEGS]
+
     BG = "#0d1a12"
-    fig, ax = plt.subplots(figsize=(10, 4.5), facecolor=BG)
+    fig, ax = plt.subplots(figsize=(9, 5), facecolor=BG)
     ax.set_facecolor(BG)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    window_w = 1.8
-    window_h = 0.9
+    window_w = 0.85
+    window_h = 0.55
 
     def animate(frame_idx):
         ax.cla()
@@ -269,8 +272,9 @@ def _render_gif(states, path: str, frame_dt: float):
         for k in range(3):
             angles.append(angles[-1] + float(q[3 + k]))
 
-        cx_head = float(xy[0, 0])
-        ax.set_xlim(cx_head - 0.3*window_w, cx_head + 0.7*window_w)
+        # Camera follows worm midpoint
+        cx_mid = float((xy[0, 0] + xy[-1, 0]) / 2)
+        ax.set_xlim(cx_mid - 0.55*window_w, cx_mid + 0.45*window_w)
         ax.set_ylim(-window_h/2, window_h/2)
 
         # CPG activations at this time
@@ -279,6 +283,11 @@ def _render_gif(states, path: str, frame_dt: float):
             phase = 2.0*np.pi*FREQ*t_sim - k*PHASE_OFFSET
             acts.append(AMPLITUDE * max(0.0,  np.sin(phase)))   # flexor
             acts.append(AMPLITUDE * max(0.0, -np.sin(phase)))   # extensor
+
+        # Skeleton — dark centerline shows the bend shape clearly
+        ax.plot([float(xy[j, 0]) for j in range(N_SEGMENTS)],
+                [float(xy[j, 1]) for j in range(N_SEGMENTS)],
+                color="#1a3028", lw=2.5, zorder=2, solid_capstyle="round")
 
         # Draw muscles (behind bodies)
         for k in range(N_JOINTS):
@@ -302,26 +311,30 @@ def _render_gif(states, path: str, frame_dt: float):
                                  cy1 - hl1*sa1 + side*R_MOM*perp1[1]])
 
                 ff    = _force_frac(a_act, prox, dist)
-                belly = 0.003 + 0.018*np.sqrt(max(0.0, ff))
-                alpha = 0.30 + 0.70*a_act
+                belly = 0.004 + 0.016*np.sqrt(max(0.0, ff))
+                alpha = 0.40 + 0.60*a_act
 
                 sx, sy = _spindle_xy(prox, dist, belly)
                 ax.add_patch(Polygon(np.column_stack([sx, sy]), closed=True,
                                      facecolor=color, alpha=alpha,
-                                     edgecolor=color, linewidth=0.4, zorder=3))
-                ax.plot(*prox, 'o', color='#ffffff', ms=1.8, zorder=8, alpha=0.75)
-                ax.plot(*dist, 'o', color='#ffffff', ms=1.8, zorder=8, alpha=0.75)
+                                     edgecolor=color, linewidth=0.3, zorder=3))
 
-        # Draw body capsules (semi-transparent, in front of muscles)
+        # Draw body capsules with thinner visual radius (shows joint gaps)
         for j in range(N_SEGMENTS):
-            hl, r = SEGS[j]
-            xs, ys = _capsule_xy(float(xy[j,0]), float(xy[j,1]), hl, r, angles[j])
+            hl, _ = SEGS[j]
+            xs, ys = _capsule_xy(float(xy[j,0]), float(xy[j,1]), hl, VIS_RADII[j], angles[j])
             ax.add_patch(Polygon(np.column_stack([xs, ys]), closed=True,
-                                 facecolor=SEG_COLORS[j], alpha=0.42,
-                                 edgecolor="#88e8d6", linewidth=0.7, zorder=4))
+                                 facecolor=SEG_COLORS[j], alpha=0.80,
+                                 edgecolor="#a0e8d4", linewidth=0.9, zorder=4))
+
+        # Joint pivot markers — show the hinge center
+        for k in range(N_JOINTS):
+            ax.plot(float(xy[k+1, 0]), float(xy[k+1, 1]),
+                    'o', color='#ffffff', ms=4.5, zorder=6, alpha=0.9,
+                    markeredgecolor="#88e8d6", markeredgewidth=0.6)
 
         ax.text(0.02, 0.95, f"t = {t_sim:.2f}s", transform=ax.transAxes,
-                color="#aaddcc", fontsize=9, va="top", fontfamily="monospace")
+                color="#6ab89a", fontsize=9, va="top", fontfamily="monospace")
         return []
 
     anim = animation.FuncAnimation(

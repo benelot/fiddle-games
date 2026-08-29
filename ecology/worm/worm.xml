@@ -29,19 +29,19 @@
 
       <!-- Segment 1 -->
       <body name="seg1" pos="0.21 0 0">
-        <joint name="j0" type="hinge" axis="0 0 1" range="-55 55" damping="0.01"/>
+        <joint name="j0" type="hinge" axis="0 0 1" range="-75 75" damping="0.01"/>
         <geom name="g1" type="capsule" fromto="-0.075 0 0 0.075 0 0" size="0.036"
               rgba="0.30 0.74 0.64 1"/>
 
         <!-- Segment 2 -->
         <body name="seg2" pos="0.185 0 0">
-          <joint name="j1" type="hinge" axis="0 0 1" range="-55 55" damping="0.01"/>
+          <joint name="j1" type="hinge" axis="0 0 1" range="-75 75" damping="0.01"/>
           <geom name="g2" type="capsule" fromto="-0.065 0 0 0.065 0 0" size="0.031"
                 rgba="0.25 0.65 0.56 1"/>
 
           <!-- Segment 3: tail -->
           <body name="seg3" pos="0.16 0 0">
-            <joint name="j2" type="hinge" axis="0 0 1" range="-55 55" damping="0.008"/>
+            <joint name="j2" type="hinge" axis="0 0 1" range="-75 75" damping="0.008"/>
             <geom name="g3" type="capsule" fromto="-0.055 0 0 0.055 0 0" size="0.025"
                   rgba="0.20 0.56 0.48 1"/>
           </body>
