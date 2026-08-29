@@ -1,0 +1,6 @@
+# CPU-only for remote session; switch to jax[cuda12] on the home GPU server
+jax[cpu]
+brax>=0.10.0
+mediapy
+matplotlib
+Pillow
