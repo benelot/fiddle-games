@@ -203,64 +203,126 @@ def main():
 
 
 def _render_gif(states, path: str, frame_dt: float):
-    """Top-down 2D animated GIF via matplotlib."""
+    """Top-down 2D animated GIF — Geijtenbeek-style capsule bodies + Hill muscle spindles."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.animation as animation
-    import matplotlib.patches as mpatches
+    from matplotlib.patches import Polygon
 
     print(f"Rendering GIF ({len(states)} frames) → {path}")
 
-    BG      = "#111a14"
-    COLORS  = ["#4dd6c4", "#3dc2b0", "#2dae9c", "#1d9a88"]
-    RADII   = [0.040, 0.036, 0.031, 0.025]
-    CONNECT = "#2a9a8a"
+    # Body geometry from worm.xml (halfLen, radius)
+    SEGS = [(0.090, 0.040), (0.075, 0.036), (0.065, 0.031), (0.055, 0.025)]
+    SEG_COLORS = ["#59d1bc", "#4dbfaa", "#40ad98", "#339b87"]
+    R_MOM = MUSCLE.r   # moment arm (m)
 
-    fig, ax = plt.subplots(figsize=(9, 4.5), facecolor=BG)
+    # Hill force-length for visual weight (isometric, rigid tendon)
+    def _force_frac(act, p0, p1):
+        lmtu = float(np.hypot(p1[0]-p0[0], p1[1]-p0[1]))
+        lCE  = max(lmtu - MUSCLE.l_slack, 0.01 * MUSCLE.l_opt)
+        fl   = float(np.exp(-((lCE / MUSCLE.l_opt - 1.0) / MUSCLE.w) ** 2))
+        return float(act) * fl
+
+    def _capsule_xy(cx, cy, hl, r, angle, n=10):
+        tr = np.linspace(-np.pi/2, np.pi/2, n)
+        tl = np.linspace(np.pi/2, 3*np.pi/2, n)
+        lx = np.concatenate([hl + r*np.cos(tr), -hl + r*np.cos(tl)])
+        ly = np.concatenate([r*np.sin(tr), r*np.sin(tl)])
+        ca, sa = np.cos(angle), np.sin(angle)
+        return cx + ca*lx - sa*ly, cy + sa*lx + ca*ly
+
+    def _spindle_xy(p0, p1, belly):
+        dx, dy = p1[0]-p0[0], p1[1]-p0[1]
+        L  = max(float(np.hypot(dx, dy)), 1e-6)
+        px, py = -dy/L, dx/L
+        mx, my = (p0[0]+p1[0])*0.5, (p0[1]+p1[1])*0.5
+        t = np.linspace(0, 1, 14)
+        tx = (1-t)**2*p0[0] + 2*(1-t)*t*(mx+px*belly) + t**2*p1[0]
+        ty = (1-t)**2*p0[1] + 2*(1-t)*t*(my+py*belly) + t**2*p1[1]
+        bx = (1-t)**2*p0[0] + 2*(1-t)*t*(mx-px*belly) + t**2*p1[0]
+        by = (1-t)**2*p0[1] + 2*(1-t)*t*(my-py*belly) + t**2*p1[1]
+        return np.concatenate([tx, bx[::-1]]), np.concatenate([ty, by[::-1]])
+
+    BG = "#0d1a12"
+    fig, ax = plt.subplots(figsize=(10, 4.5), facecolor=BG)
     ax.set_facecolor(BG)
     ax.set_aspect("equal")
     ax.axis("off")
 
-    window_w = 2.0
-    window_h = 1.0
-
-    circles = [plt.Circle((0, 0), RADII[j], color=COLORS[j], zorder=5)
-               for j in range(N_SEGMENTS)]
-    for c in circles:
-        ax.add_patch(c)
-
-    conn_lines = [ax.plot([], [], color=CONNECT, lw=4, zorder=4, solid_capstyle="round")[0]
-                  for _ in range(N_JOINTS)]
-
-    time_txt = ax.text(0.02, 0.95, "", transform=ax.transAxes,
-                       color="white", fontsize=9, va="top",
-                       fontfamily="monospace")
-
-    def get_xy(state):
-        """Return (4, 2) array of XY positions for each body."""
-        return np.array(state.x.pos[:, :2])  # (n_links, 3) → take XY
+    window_w = 1.8
+    window_h = 0.9
 
     def animate(frame_idx):
-        state = states[frame_idx]
-        xy = get_xy(state)                       # shape (4, 2)
+        ax.cla()
+        ax.set_facecolor(BG)
+        ax.set_aspect("equal")
+        ax.axis("off")
 
-        cx = float(xy[0, 0])                     # follow head
-        ax.set_xlim(cx - 0.3 * window_w, cx + 0.7 * window_w)
-        ax.set_ylim(-window_h / 2, window_h / 2)
+        state   = states[frame_idx]
+        q       = np.array(state.q)
+        xy      = np.array(state.x.pos[:, :2])   # (4, 2) body centers in world
+        t_sim   = frame_idx * frame_dt
 
-        for j, circle in enumerate(circles):
-            circle.center = (float(xy[j, 0]), float(xy[j, 1]))
+        # World orientation of each segment (cumulative joint angles)
+        angles = [float(q[2])]
+        for k in range(3):
+            angles.append(angles[-1] + float(q[3 + k]))
 
-        for k, line in enumerate(conn_lines):
-            line.set_data(
-                [float(xy[k, 0]), float(xy[k + 1, 0])],
-                [float(xy[k, 1]), float(xy[k + 1, 1])],
-            )
+        cx_head = float(xy[0, 0])
+        ax.set_xlim(cx_head - 0.3*window_w, cx_head + 0.7*window_w)
+        ax.set_ylim(-window_h/2, window_h/2)
 
-        t = frame_idx * frame_dt
-        time_txt.set_text(f"t = {t:.2f}s")
-        return circles + conn_lines + [time_txt]
+        # CPG activations at this time
+        acts = []
+        for k in range(N_JOINTS):
+            phase = 2.0*np.pi*FREQ*t_sim - k*PHASE_OFFSET
+            acts.append(AMPLITUDE * max(0.0,  np.sin(phase)))   # flexor
+            acts.append(AMPLITUDE * max(0.0, -np.sin(phase)))   # extensor
+
+        # Draw muscles (behind bodies)
+        for k in range(N_JOINTS):
+            hl0, _ = SEGS[k]
+            hl1, _ = SEGS[k+1]
+            a0, a1 = angles[k], angles[k+1]
+            ca0, sa0 = np.cos(a0), np.sin(a0)
+            ca1, sa1 = np.cos(a1), np.sin(a1)
+            cx0, cy0 = float(xy[k,   0]), float(xy[k,   1])
+            cx1, cy1 = float(xy[k+1, 0]), float(xy[k+1, 1])
+            perp0 = np.array([-sa0, ca0])
+            perp1 = np.array([-sa1, ca1])
+
+            for side, color, a_act in [
+                (+1, "#d94040", acts[2*k]),     # flexor  — red, +perp
+                (-1, "#3070c8", acts[2*k+1]),   # extensor — blue, -perp
+            ]:
+                prox = np.array([cx0 + hl0*ca0 + side*R_MOM*perp0[0],
+                                 cy0 + hl0*sa0 + side*R_MOM*perp0[1]])
+                dist = np.array([cx1 - hl1*ca1 + side*R_MOM*perp1[0],
+                                 cy1 - hl1*sa1 + side*R_MOM*perp1[1]])
+
+                ff    = _force_frac(a_act, prox, dist)
+                belly = 0.003 + 0.018*np.sqrt(max(0.0, ff))
+                alpha = 0.30 + 0.70*a_act
+
+                sx, sy = _spindle_xy(prox, dist, belly)
+                ax.add_patch(Polygon(np.column_stack([sx, sy]), closed=True,
+                                     facecolor=color, alpha=alpha,
+                                     edgecolor=color, linewidth=0.4, zorder=3))
+                ax.plot(*prox, 'o', color='#ffffff', ms=1.8, zorder=8, alpha=0.75)
+                ax.plot(*dist, 'o', color='#ffffff', ms=1.8, zorder=8, alpha=0.75)
+
+        # Draw body capsules (semi-transparent, in front of muscles)
+        for j in range(N_SEGMENTS):
+            hl, r = SEGS[j]
+            xs, ys = _capsule_xy(float(xy[j,0]), float(xy[j,1]), hl, r, angles[j])
+            ax.add_patch(Polygon(np.column_stack([xs, ys]), closed=True,
+                                 facecolor=SEG_COLORS[j], alpha=0.42,
+                                 edgecolor="#88e8d6", linewidth=0.7, zorder=4))
+
+        ax.text(0.02, 0.95, f"t = {t_sim:.2f}s", transform=ax.transAxes,
+                color="#aaddcc", fontsize=9, va="top", fontfamily="monospace")
+        return []
 
     anim = animation.FuncAnimation(
         fig, animate, frames=len(states),
