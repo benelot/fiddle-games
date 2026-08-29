@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated simulation outputs
+ecology/**/*.gif
+ecology/**/*.html
+ecology/**/*.mp4
