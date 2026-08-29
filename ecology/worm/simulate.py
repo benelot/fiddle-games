@@ -212,10 +212,16 @@ def _render_gif(states, path: str, frame_dt: float):
 
     print(f"Rendering GIF ({len(states)} frames) → {path}")
 
-    # Body geometry from worm.xml (halfLen, radius)
+    # Geometry (halfLen, radius) matching worm.xml:
+    #   seg0: fromto="-0.09 0 0 0.09 0 0"  → symmetric, center at frame origin
+    #   seg1: fromto="0 0 0 0.15 0 0"      → one-sided; center 0.075m ahead of joint
+    #   seg2: fromto="0 0 0 0.13 0 0"      → center 0.065m ahead of joint
+    #   seg3: fromto="0 0 0 0.11 0 0"      → center 0.055m ahead of joint
     SEGS = [(0.090, 0.040), (0.075, 0.036), (0.065, 0.031), (0.055, 0.025)]
     SEG_COLORS = ["#59d1bc", "#4dbfaa", "#40ad98", "#339b87"]
-    R_MOM = MUSCLE.r   # moment arm (m)
+    R_MOM = MUSCLE.r       # moment arm (m)
+    ATTACH_D = 0.022       # muscle attachment offset along body from the pivot (m)
+    VIS_RADII = [r * 0.60 for _, r in SEGS]
 
     # Hill force-length for visual weight (isometric, rigid tendon)
     def _force_frac(act, p0, p1):
@@ -225,6 +231,7 @@ def _render_gif(states, path: str, frame_dt: float):
         return float(act) * fl
 
     def _capsule_xy(cx, cy, hl, r, angle, n=10):
+        """Polygon for a capsule centred at (cx,cy), half-length hl, radius r, rotated by angle."""
         tr = np.linspace(-np.pi/2, np.pi/2, n)
         tl = np.linspace(np.pi/2, 3*np.pi/2, n)
         lx = np.concatenate([hl + r*np.cos(tr), -hl + r*np.cos(tl)])
@@ -244,9 +251,6 @@ def _render_gif(states, path: str, frame_dt: float):
         by = (1-t)**2*p0[1] + 2*(1-t)*t*(my-py*belly) + t**2*p1[1]
         return np.concatenate([tx, bx[::-1]]), np.concatenate([ty, by[::-1]])
 
-    # Visual radii: thinner than physics so joint gaps are apparent
-    VIS_RADII = [r * 0.55 for _, r in SEGS]
-
     BG = "#0d1a12"
     fig, ax = plt.subplots(figsize=(9, 5), facecolor=BG)
     ax.set_facecolor(BG)
@@ -262,18 +266,35 @@ def _render_gif(states, path: str, frame_dt: float):
         ax.set_aspect("equal")
         ax.axis("off")
 
-        state   = states[frame_idx]
-        q       = np.array(state.q)
-        xy      = np.array(state.x.pos[:, :2])   # (4, 2) body centers in world
-        t_sim   = frame_idx * frame_dt
+        state  = states[frame_idx]
+        q      = np.array(state.q)
+        t_sim  = frame_idx * frame_dt
+
+        # state.x.pos[k] = frame origin of body k in world:
+        #   k=0 → seg0 center (symmetric geom)
+        #   k=1 → j0 pivot  = right end of seg0 = left end of seg1
+        #   k=2 → j1 pivot  = right end of seg1 = left end of seg2
+        #   k=3 → j2 pivot  = right end of seg2 = left end of seg3
+        jp = np.array(state.x.pos[:, :2])   # (4, 2)  joint/origin positions
 
         # World orientation of each segment (cumulative joint angles)
         angles = [float(q[2])]
         for k in range(3):
             angles.append(angles[-1] + float(q[3 + k]))
 
-        # Camera follows worm midpoint
-        cx_mid = float((xy[0, 0] + xy[-1, 0]) / 2)
+        # Body centre positions (for capsule drawing and camera)
+        # seg0 is symmetric → COM = frame origin
+        # seg k≥1 → COM is HALF_LEN ahead of the joint pivot along seg k's axis
+        hl_arr = [s[0] for s in SEGS]  # [0.09, 0.075, 0.065, 0.055]
+        centers = [jp[0].copy()]
+        for k in range(1, N_SEGMENTS):
+            a = angles[k]
+            centers.append(jp[k] + hl_arr[k] * np.array([np.cos(a), np.sin(a)]))
+
+        # Camera: follow midpoint between seg0 COM and far end of seg3
+        a3 = angles[3]
+        tail_end = jp[3] + 2*hl_arr[3] * np.array([np.cos(a3), np.sin(a3)])
+        cx_mid   = float((centers[0][0] + tail_end[0]) / 2)
         ax.set_xlim(cx_mid - 0.55*window_w, cx_mid + 0.45*window_w)
         ax.set_ylim(-window_h/2, window_h/2)
 
@@ -284,54 +305,56 @@ def _render_gif(states, path: str, frame_dt: float):
             acts.append(AMPLITUDE * max(0.0,  np.sin(phase)))   # flexor
             acts.append(AMPLITUDE * max(0.0, -np.sin(phase)))   # extensor
 
-        # Skeleton — dark centerline shows the bend shape clearly
-        ax.plot([float(xy[j, 0]) for j in range(N_SEGMENTS)],
-                [float(xy[j, 1]) for j in range(N_SEGMENTS)],
-                color="#1a3028", lw=2.5, zorder=2, solid_capstyle="round")
+        # Skeleton through COMs
+        ax.plot([c[0] for c in centers], [c[1] for c in centers],
+                color="#1a3028", lw=2.0, zorder=2, solid_capstyle="round")
 
         # Draw muscles (behind bodies)
+        # Muscle at joint k connects seg k (parent) and seg k+1 (child).
+        # Pivot = jp[k+1].
+        # Attachment on seg k:   ATTACH_D *behind* the pivot along seg k's axis
+        # Attachment on seg k+1: ATTACH_D *ahead*  of the pivot along seg k+1's axis
         for k in range(N_JOINTS):
-            hl0, _ = SEGS[k]
-            hl1, _ = SEGS[k+1]
-            a0, a1 = angles[k], angles[k+1]
-            ca0, sa0 = np.cos(a0), np.sin(a0)
-            ca1, sa1 = np.cos(a1), np.sin(a1)
-            cx0, cy0 = float(xy[k,   0]), float(xy[k,   1])
-            cx1, cy1 = float(xy[k+1, 0]), float(xy[k+1, 1])
-            perp0 = np.array([-sa0, ca0])
-            perp1 = np.array([-sa1, ca1])
+            pivot = jp[k+1]          # world position of hinge pivot
+            a_k  = angles[k]         # seg k (parent) world angle
+            a_k1 = angles[k+1]       # seg k+1 (child) world angle
+            axis_k  = np.array([ np.cos(a_k),   np.sin(a_k)])
+            axis_k1 = np.array([ np.cos(a_k1),  np.sin(a_k1)])
+            perp_k  = np.array([-np.sin(a_k),   np.cos(a_k)])
+            perp_k1 = np.array([-np.sin(a_k1),  np.cos(a_k1)])
 
             for side, color, a_act in [
                 (+1, "#d94040", acts[2*k]),     # flexor  — red, +perp
                 (-1, "#3070c8", acts[2*k+1]),   # extensor — blue, -perp
             ]:
-                prox = np.array([cx0 + hl0*ca0 + side*R_MOM*perp0[0],
-                                 cy0 + hl0*sa0 + side*R_MOM*perp0[1]])
-                dist = np.array([cx1 - hl1*ca1 + side*R_MOM*perp1[0],
-                                 cy1 - hl1*sa1 + side*R_MOM*perp1[1]])
+                # prox: inside seg k, behind the pivot
+                prox = pivot - ATTACH_D*axis_k  + side*R_MOM*perp_k
+                # dist: inside seg k+1, ahead of the pivot
+                dist = pivot + ATTACH_D*axis_k1 + side*R_MOM*perp_k1
 
                 ff    = _force_frac(a_act, prox, dist)
-                belly = 0.004 + 0.016*np.sqrt(max(0.0, ff))
-                alpha = 0.40 + 0.60*a_act
+                belly = 0.003 + 0.018*np.sqrt(max(0.0, ff))
+                alpha = 0.35 + 0.65*a_act
 
                 sx, sy = _spindle_xy(prox, dist, belly)
                 ax.add_patch(Polygon(np.column_stack([sx, sy]), closed=True,
                                      facecolor=color, alpha=alpha,
                                      edgecolor=color, linewidth=0.3, zorder=3))
 
-        # Draw body capsules with thinner visual radius (shows joint gaps)
+        # Draw body capsules (using COMs + visual radii)
         for j in range(N_SEGMENTS):
-            hl, _ = SEGS[j]
-            xs, ys = _capsule_xy(float(xy[j,0]), float(xy[j,1]), hl, VIS_RADII[j], angles[j])
+            hl = hl_arr[j]
+            cx, cy = float(centers[j][0]), float(centers[j][1])
+            xs, ys = _capsule_xy(cx, cy, hl, VIS_RADII[j], angles[j])
             ax.add_patch(Polygon(np.column_stack([xs, ys]), closed=True,
                                  facecolor=SEG_COLORS[j], alpha=0.80,
                                  edgecolor="#a0e8d4", linewidth=0.9, zorder=4))
 
-        # Joint pivot markers — show the hinge center
+        # Joint pivot markers at the actual boundary between segments
         for k in range(N_JOINTS):
-            ax.plot(float(xy[k+1, 0]), float(xy[k+1, 1]),
-                    'o', color='#ffffff', ms=4.5, zorder=6, alpha=0.9,
-                    markeredgecolor="#88e8d6", markeredgewidth=0.6)
+            ax.plot(float(jp[k+1, 0]), float(jp[k+1, 1]),
+                    'o', color='#ffffff', ms=5.0, zorder=6, alpha=0.95,
+                    markeredgecolor="#88e8d6", markeredgewidth=0.7)
 
         ax.text(0.02, 0.95, f"t = {t_sim:.2f}s", transform=ax.transAxes,
                 color="#6ab89a", fontsize=9, va="top", fontfamily="monospace")

@@ -1,12 +1,18 @@
 <mujoco model="worm">
   <!--
     4-segment swimming worm.
-    Follows the Brax swimmer.xml pattern:
-      • Root body uses two slide joints (X, Y) + one hinge (rot Z) for 2D motion
-      • option density + viscosity activates Brax's built-in fluid force model,
-        giving anisotropic drag that makes undulation produce forward thrust
-      • No gravity effects in the XY plane (Z is constrained by sliders)
-      • contype/conaffinity=0 on all geoms — no ground contact needed
+    Joints are at the CONNECTION POINTS between segments (right end of parent body).
+    Each child body's frame origin IS the hinge pivot, so when the joint bends the
+    segment rotates about its own near end — anatomically correct.
+
+    Body layout (world X, straight):
+      seg0 (head):  symmetric, extends -0.09…+0.09 from root origin
+      j0 pivot:     at x=+0.09  (right end of seg0)
+      seg1:         extends 0…0.15 from j0 pivot
+      j1 pivot:     at x=+0.15 in seg1 frame
+      seg2:         extends 0…0.13 from j1 pivot
+      j2 pivot:     at x=+0.13 in seg2 frame
+      seg3 (tail):  extends 0…0.11 from j2 pivot
 
     q layout:  [x, y, root_rot, j0, j1, j2]
     qd layout: [vx, vy, wz, dj0, dj1, dj2]
@@ -19,7 +25,7 @@
   </default>
 
   <worldbody>
-    <!-- Segment 0: head -->
+    <!-- Segment 0: head, symmetric capsule centred at root -->
     <body name="seg0" pos="0 0 0">
       <joint name="slider_x" type="slide" axis="1 0 0"/>
       <joint name="slider_y" type="slide" axis="0 1 0"/>
@@ -27,22 +33,22 @@
       <geom name="g0" type="capsule" fromto="-0.09 0 0 0.09 0 0" size="0.040"
             rgba="0.35 0.82 0.72 1"/>
 
-      <!-- Segment 1 -->
-      <body name="seg1" pos="0.21 0 0">
+      <!-- j0 pivot at right end of seg0 -->
+      <body name="seg1" pos="0.09 0 0">
         <joint name="j0" type="hinge" axis="0 0 1" range="-75 75" damping="0.01"/>
-        <geom name="g1" type="capsule" fromto="-0.075 0 0 0.075 0 0" size="0.036"
+        <geom name="g1" type="capsule" fromto="0 0 0 0.15 0 0" size="0.036"
               rgba="0.30 0.74 0.64 1"/>
 
-        <!-- Segment 2 -->
-        <body name="seg2" pos="0.185 0 0">
+        <!-- j1 pivot at right end of seg1 -->
+        <body name="seg2" pos="0.15 0 0">
           <joint name="j1" type="hinge" axis="0 0 1" range="-75 75" damping="0.01"/>
-          <geom name="g2" type="capsule" fromto="-0.065 0 0 0.065 0 0" size="0.031"
+          <geom name="g2" type="capsule" fromto="0 0 0 0.13 0 0" size="0.031"
                 rgba="0.25 0.65 0.56 1"/>
 
-          <!-- Segment 3: tail -->
-          <body name="seg3" pos="0.16 0 0">
+          <!-- j2 pivot at right end of seg2 -->
+          <body name="seg3" pos="0.13 0 0">
             <joint name="j2" type="hinge" axis="0 0 1" range="-75 75" damping="0.008"/>
-            <geom name="g3" type="capsule" fromto="-0.055 0 0 0.055 0 0" size="0.025"
+            <geom name="g3" type="capsule" fromto="0 0 0 0.11 0 0" size="0.025"
                   rgba="0.20 0.56 0.48 1"/>
           </body>
         </body>
