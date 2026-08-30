@@ -1,11 +1,12 @@
 """
-Muscle-driven 1-D vertical hopper — Thelen 2003 Hill-type muscles in Brax/JAX.
+Muscle-driven planar hopper — Thelen 2003 Hill-type muscles in Brax/JAX.
 
 Physics
 -------
   • Brax generalized pipeline: rigid-body dynamics + MuJoCo contact model.
-  • Two DOF: torso vertical slide (z) + knee hinge.
-  • Lateral motion is blocked by the XML (slide_z joint only).
+  • Three DOF: torso slide_z (vertical) + rooty (sagittal tipping) + knee hinge.
+  • Lateral motion and roll/yaw are blocked; sagittal plane is free.
+  • X position is fixed so contact geometry stays stable under the body.
   • Ground contact handled by Brax through the foot sphere geom.
 
 Muscles
@@ -128,14 +129,14 @@ def _compute_torque(q: jnp.ndarray, qd: jnp.ndarray,
     """
     Map muscle activations to a scalar knee torque.
 
-    q[0] = slide_z (m),  q[1] = knee angle (rad)
-    qd[0] = vz (m/s),   qd[1] = knee angular velocity (rad/s)
+    q[0] = slide_z (m),  q[1] = rooty (rad),  q[2] = knee (rad)
+    qd[0] = vz (m/s),   qd[1] = omega_root,  qd[2] = omega_knee
     a[0] = a_ext,        a[1] = a_flex
 
     Returns shape (1,) — one actuator (knee_motor).
     """
-    theta     = q[1]
-    theta_dot = qd[1]
+    theta     = q[2]
+    theta_dot = qd[2]
 
     tau = joint_torque(
         a_flex    = a[1],
@@ -162,8 +163,8 @@ def main():
     sys_brax = mjcf.load(xml_path)
 
     # Initial state: torso at rest height, knee slightly bent (-0.3 rad)
-    q0    = jnp.array([0.0, -0.3])   # [slide_z offset, knee_angle]
-    qd0   = jnp.zeros(2)
+    q0    = jnp.array([0.0, 0.0, -0.3])   # [slide_z, rooty, knee]
+    qd0   = jnp.zeros(3)
     state = pipeline.init(sys_brax, q0, qd0)
 
     @jax.jit
@@ -196,9 +197,11 @@ def main():
         if i % (n_steps // 10) == 0:
             q_np = np.array(state.q)
             z = float(q_np[0])
-            knee_deg = float(np.degrees(q_np[1]))
+            root_deg = float(np.degrees(q_np[1]))
+            knee_deg = float(np.degrees(q_np[2]))
             print(f"  {100*i//n_steps}%  t={i*DT:.1f}s  "
-                  f"z_torso={z:+.3f}m  knee={knee_deg:+.1f}°", flush=True)
+                  f"z_torso={z:+.3f}m  rooty={root_deg:+.1f}°  knee={knee_deg:+.1f}°",
+                  flush=True)
 
     elapsed = time.time() - t0
     print(f"Done in {elapsed:.1f}s  ({n_steps/elapsed:.0f} steps/s, {len(stored)} frames)")
@@ -223,8 +226,29 @@ def main():
 
 # ── Visualization ─────────────────────────────────────────────────────────────
 
+def _quat_to_angle_y(quat: np.ndarray) -> float:
+    """Extract rotation around the Y axis from a [w, x, y, z] quaternion."""
+    w, qx, qy, qz = float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
+    return np.arctan2(2.0 * (w * qy + qx * qz),
+                      1.0 - 2.0 * (qx * qx + qy * qy))
+
+
+def _rotate_by_quat_y(vec_local: np.ndarray, quat: np.ndarray) -> np.ndarray:
+    """Rotate a 3-vector by a [w,x,y,z] quaternion (XZ-plane only for rendering)."""
+    angle = _quat_to_angle_y(quat)
+    ca, sa = np.cos(angle), np.sin(angle)
+    # Y-axis rotation: (x,y,z) → (ca*x+sa*z, y, -sa*x+ca*z)
+    x, y, z = float(vec_local[0]), float(vec_local[1]), float(vec_local[2])
+    return np.array([ca * x + sa * z, y, -sa * x + ca * z])
+
+
 def _render_gif(stored, path: str, frame_dt: float):
-    """Side-view 2-D visualization with jet-colored muscle spindles."""
+    """
+    Side-view 2-D visualization using faithful Brax world-frame positions.
+
+    state.x.pos[i] = [x, y, z] world position of body i (torso=0, shin=1, foot=2)
+    state.x.rot[i] = [w, x, y, z] world-frame quaternion of body i
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -239,15 +263,11 @@ def _render_gif(stored, path: str, frame_dt: float):
     BODY_EDG = "#4a5a80"
     FOOT_COL = "#5a6a90"
 
-    # Geometry constants matching hopper.xml
-    TORSO_Z0     = 0.75   # initial torso z (world frame offset in xml body pos)
-    SHIN_ATTACH  = -0.15  # shin body pos.z relative to torso
-    FOOT_POS     = -0.50  # foot body pos.z relative to shin
-    TORSO_HL     = 0.15   # capsule half-length
-    TORSO_R      = 0.05
-    SHIN_HL      = 0.25
-    SHIN_R       = 0.04
-    FOOT_R       = 0.07
+    TORSO_HL = 0.15   # capsule half-length
+    TORSO_R  = 0.05
+    SHIN_HL  = 0.25
+    SHIN_R   = 0.04
+    FOOT_R   = 0.07
 
     def _capsule_pts(cx, cz, hl, r, angle, n=14):
         """Screen polygon for a 2-D capsule viewed from the side."""
@@ -272,6 +292,12 @@ def _render_gif(stored, path: str, frame_dt: float):
         return (np.concatenate([tx, bx[::-1]]),
                 np.concatenate([tz, bz[::-1]]))
 
+    # Compute x-range for a scrolling camera (torso=body 0 in 2-link system)
+    all_torso_x = []
+    for s, _ in stored:
+        pos = np.array(s.x.pos)   # [2, 3]: torso, shin
+        all_torso_x.append(float(pos[0, 0]))
+
     fig, ax = plt.subplots(figsize=(5, 7), facecolor=BG)
     ax.set_facecolor(BG)
     ax.set_aspect("equal")
@@ -284,41 +310,51 @@ def _render_gif(stored, path: str, frame_dt: float):
         ax.axis("off")
 
         state, a_act = stored[fi]
-        q    = np.array(state.q)    # [dz, knee_angle]
-        a_np = np.array(a_act)      # [a_ext, a_flex]
+        # ── Faithful world-frame positions from Brax ──────────────────────────
+        # state.x.pos has 2 entries: [0]=torso, [1]=shin
+        # (foot body has no joints, so it's folded into the 2-link system;
+        #  foot geom IS active for contact, but we compute its visual pos manually)
+        pos = np.array(state.x.pos)   # [2, 3]: torso, shin
+        rot = np.array(state.x.rot)   # [2, 4]: quaternions [w,x,y,z]
+        q   = np.array(state.q)       # [slide_x, slide_z, rooty, knee]
+        a_np = np.array(a_act)        # [a_ext, a_flex]
         t_sim = fi * frame_dt
 
-        # World positions
-        z_torso = TORSO_Z0 + float(q[0])
-        knee_angle = float(q[1])
+        # Body centres in the X-Z (sagittal) plane
+        torso_x, torso_z = float(pos[0, 0]), float(pos[0, 2])
+        shin_x,  shin_z  = float(pos[1, 0]), float(pos[1, 2])
 
-        # Torso vertical; shin at angle knee_angle from vertical
-        knee_world_z = z_torso + SHIN_ATTACH
-        # Shin direction: 0 = straight down, positive = forward (we use x-z plane)
-        shin_angle_world = knee_angle   # deviation from vertical downward
-        foot_world_x = FOOT_POS * np.sin(shin_angle_world)
-        foot_world_z = knee_world_z + FOOT_POS * np.cos(shin_angle_world)
+        # Orientation angles around Y axis (for capsule tilt)
+        torso_angle_y = _quat_to_angle_y(rot[0])   # sagittal tipping of torso
+        shin_angle_y  = _quat_to_angle_y(rot[1])   # shin orientation
 
-        shin_mid_x = (FOOT_POS/2) * np.sin(shin_angle_world)
-        shin_mid_z = knee_world_z + (FOOT_POS/2) * np.cos(shin_angle_world)
+        # Foot: attached at (0, 0, -0.50) in shin body frame — rotate into world
+        foot_offset_world = _rotate_by_quat_y(np.array([0.0, 0.0, -0.50]), rot[1])
+        foot_x = shin_x + float(foot_offset_world[0])
+        foot_z = shin_z + float(foot_offset_world[2])
+
+        # Knee joint position = shin body origin (hinge is at shin body frame origin)
+        knee_x = shin_x
+        knee_z = shin_z
+
+        # Camera: scroll to keep torso centred
+        cam_x = torso_x
+        def cx(x): return x - cam_x   # camera-relative x
 
         # ── Ground ──
         ax.axhline(0, color="#c0c0c0", lw=1.5, zorder=1)
-        ax.fill_between([-0.5, 0.5], [0, 0], [-0.05, -0.05], color="#d8d8d8", zorder=1)
+        ax.fill_between([-0.55, 0.55], [0, 0], [-0.05, -0.05],
+                        color="#d8d8d8", zorder=1)
 
-        # ── Muscle spindles at knee ──
-        # Each spindle runs from a proximal point on the torso side of the knee
-        # to a distal point on the shin side, offset laterally by the moment arm.
+        # ── Muscle spindles at knee (in camera frame) ──────────────────────────
         R_MOM = MUSCLE.r
-        ca, sa = np.cos(knee_angle), np.sin(knee_angle)
-        # Extensor (anterior, x > 0): proximal on torso, distal on shin
-        ext_prox = np.array([+R_MOM, knee_world_z + 0.05])
-        ext_dist = np.array([+R_MOM * ca - 0.05 * sa,
-                              knee_world_z - 0.05 * ca])
-        # Flexor (posterior, x < 0)
-        flex_prox = np.array([-R_MOM, knee_world_z + 0.05])
-        flex_dist = np.array([-R_MOM * ca + 0.05 * sa,
-                               knee_world_z - 0.05 * ca])
+        kn_ca, kn_sa = np.cos(shin_angle_y), np.sin(shin_angle_y)
+        # Extensor: anterior (positive x side relative to shin)
+        ext_prox = np.array([cx(knee_x) + R_MOM * kn_ca,   knee_z + 0.05])
+        ext_dist = np.array([cx(knee_x) + R_MOM * kn_ca,   knee_z - 0.05])
+        # Flexor: posterior (negative x side)
+        flex_prox = np.array([cx(knee_x) - R_MOM * kn_ca,  knee_z + 0.05])
+        flex_dist = np.array([cx(knee_x) - R_MOM * kn_ca,  knee_z - 0.05])
 
         for prox, dist, act_val in [(ext_prox, ext_dist, a_np[0]),
                                     (flex_prox, flex_dist, a_np[1])]:
@@ -330,43 +366,44 @@ def _render_gif(stored, path: str, frame_dt: float):
                                  facecolor=color, alpha=alpha,
                                  edgecolor=color, lw=0.3, zorder=3))
 
-        # ── Skeleton line ──
-        ax.plot([0, shin_mid_x*2, foot_world_x],
-                [z_torso, knee_world_z, foot_world_z],
+        # ── Skeleton line (camera frame) ──
+        ax.plot([cx(torso_x), cx(knee_x), cx(foot_x)],
+                [torso_z,      knee_z,      foot_z],
                 color="#8090b0", lw=1.5, zorder=2)
 
-        # ── Torso capsule ──
-        tx, tz = _capsule_pts(0, z_torso, TORSO_HL, TORSO_R, np.pi/2)
+        # ── Torso capsule — tilted by rooty ──
+        # Capsule long-axis is vertical when torso_angle_y=0; np.pi/2 = vertical
+        torso_cap_angle = np.pi/2 + torso_angle_y
+        tx, tz = _capsule_pts(cx(torso_x), torso_z,
+                              TORSO_HL, TORSO_R, torso_cap_angle)
         ax.add_patch(Polygon(np.column_stack([tx, tz]),
                              facecolor=BODY_COL, edgecolor=BODY_EDG, lw=0.8,
                              alpha=0.9, zorder=4))
 
-        # ── Shin capsule ──
-        # Capsule half-length along shin axis, displaced from knee
-        shin_cx = (FOOT_POS/2) * np.sin(shin_angle_world)
-        shin_cz = knee_world_z + (FOOT_POS/2) * np.cos(shin_angle_world)
-        shin_cap_angle = np.pi/2 + shin_angle_world  # angle of capsule long axis
-        sx2, sz2 = _capsule_pts(shin_cx, shin_cz, SHIN_HL, SHIN_R, shin_cap_angle)
+        # ── Shin capsule — tilted by shin world angle ──
+        shin_cap_angle = np.pi/2 + shin_angle_y
+        sx2, sz2 = _capsule_pts(cx(shin_x), shin_z,
+                                SHIN_HL, SHIN_R, shin_cap_angle)
         ax.add_patch(Polygon(np.column_stack([sx2, sz2]),
                              facecolor=BODY_COL, edgecolor=BODY_EDG, lw=0.8,
                              alpha=0.9, zorder=4))
 
         # ── Foot circle ──
-        foot = Circle((foot_world_x, foot_world_z), FOOT_R,
-                      color=FOOT_COL, zorder=5)
-        ax.add_patch(foot)
+        ax.add_patch(Circle((cx(foot_x), foot_z), FOOT_R,
+                            color=FOOT_COL, zorder=5))
 
         # ── Knee pivot dot ──
-        ax.plot(0, knee_world_z, 'o', color="#334060", ms=6, zorder=6)
+        ax.plot(cx(knee_x), knee_z, 'o', color="#334060", ms=6, zorder=6)
 
         # ── HUD ──
-        ax.set_xlim(-0.45, 0.45)
-        ax.set_ylim(-0.05, 1.55)
-        ax.text(-0.42, 1.48, f"t = {t_sim:.2f} s", fontsize=8,
+        ax.set_xlim(-0.50, 0.50)
+        ax.set_ylim(-0.05, 1.60)
+        z_disp = float(q[0])
+        ax.text(-0.47, 1.53, f"t = {t_sim:.2f} s", fontsize=8,
                 color="#334060", fontfamily="monospace", va="top")
-        ax.text(-0.42, 1.38, f"z = {float(q[0]):+.3f} m", fontsize=8,
+        ax.text(-0.47, 1.43, f"z = {z_disp:+.3f} m", fontsize=8,
                 color="#334060", fontfamily="monospace", va="top")
-        ax.text(-0.42, 1.28,
+        ax.text(-0.47, 1.33,
                 f"a_ext={a_np[0]:.2f}  a_flex={a_np[1]:.2f}", fontsize=7,
                 color="#334060", fontfamily="monospace", va="top")
         return []
