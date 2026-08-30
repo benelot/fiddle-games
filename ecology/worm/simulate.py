@@ -96,14 +96,16 @@ N_SEGMENTS   = 4
 # so less force is needed to drive undulatory locomotion.
 # ---------------------------------------------------------------------------
 MUSCLE = MuscleParams(
-    F_max    = 200.0,  # N — strong enough to overcome viscous + density drag
-    l_opt    = 0.08,   # m  optimal CE fibre length
-    l_slack  = 0.05,   # m  tendon slack (rigid-tendon assumption)
-    v_max    = 0.6,    # m/s
-    r        = 0.040,  # m  moment arm
-    w        = 0.56,   # Gaussian width (fraction of l_opt)
-    k_pee    = 0.35,   # PEE stiffness (× F_max)
-    pee_slack= 1.0,    # PEE rest at l_opt
+    F_max         = 200.0,  # N — strong enough to overcome viscous + density drag
+    l_opt         = 0.08,   # m  optimal CE fibre length
+    l_slack       = 0.05,   # m  tendon slack (rigid-tendon)
+    v_max         = 0.6,    # m/s
+    r             = 0.040,  # m  moment arm
+    KshapeActive  = 0.56,   # Gaussian σ (Thelen default = 0.45; wider here for stability)
+    Af            = 0.25,   # Hill concentric shape
+    Flen          = 1.4,    # eccentric force ceiling
+    kpe           = 3.5,    # PEE curvature (softer than Thelen default for aquatic scale)
+    e0            = 0.8,    # PEE strain at F_iso
 )
 
 # ---------------------------------------------------------------------------
@@ -141,9 +143,14 @@ def _cpg_drive(t: jnp.ndarray) -> jnp.ndarray:
 
 @jax.jit
 def _update_activation(a: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
-    """First-order activation filter: da/dt = (u - a) / τ(u, a)."""
-    tau = jnp.where(u > a, TAU_ACT, TAU_DEACT)
-    return a + (u - a) / tau * DT
+    """Thelen 2003 variable-τ activation dynamics: da/dt = (u−a)/τ(u,a)."""
+    a_c = jnp.clip(a, 0.01, 1.0)
+    tau = jnp.where(
+        u > a_c,
+        TAU_ACT   * (0.5 + 1.5 * a_c),
+        TAU_DEACT / (0.5 + 1.5 * a_c),
+    )
+    return jnp.clip(a + (u - a_c) / tau * DT, 0.0, 1.0)
 
 
 def _compute_torques(q: jnp.ndarray, qd: jnp.ndarray,
