@@ -1,18 +1,47 @@
 """
 Hill-type muscle-tendon model — Thelen 2003 formulation.
 
-References:
-  Thelen 2003 "Adjustment of Muscle Mechanics Model Parameters to Simulate
-    Dynamic Contractions in Older Adults"
-  Geijtenbeek 2013 "Flexible Muscle-Based Locomotion for Bipedal Creatures"
-  OpenSim Thelen2003Muscle.cpp  (source for numerical constants)
+References
+----------
+Thelen, D. G. (2003). Adjustment of Muscle Mechanics Model Parameters to
+  Simulate Dynamic Contractions in Older Adults. J. Biomech. Eng. 125(1).
+Geijtenbeek, T. et al. (2013). Flexible Muscle-Based Locomotion for Bipedal
+  Creatures. ACM Trans. Graph. (SIGGRAPH Asia) 32(6).
+OpenSim Thelen2003Muscle.cpp and MuscleFirstOrderActivationDynamicModel.cpp
+  (authoritative source for numerical constants and exact formulations).
 
-Architecture per joint (used by joint_torque):
-  Two antagonistic muscles — flexor and extensor — each with:
-    CE : contractile element  (active force, gated by fl × fv)
-    PEE: parallel elastic     (passive resistance when stretched)
-  Rigid tendon: l_CE = l_MTU − l_slack  (no implicit solve needed, JIT-friendly)
-  Net joint torque = moment_arm × (F_flex − F_ext)
+Architecture
+------------
+Each joint is driven by one antagonistic pair (flexor + extensor). Each muscle
+has two elements in parallel:
+
+  CE  — Contractile element.  Active force is gated by force-length (fl) and
+        force-velocity (fv) multipliers, then scaled by activation and F_max.
+  PEE — Parallel elastic element.  Passive exponential spring that resists
+        over-lengthening; zero force at or below l_opt.
+
+Rigid-tendon assumption (Zajac 1989): l_CE = l_MTU − l_slack, so no implicit
+solve is required and the model is fully JIT-compatible with JAX.
+
+Net joint torque = moment_arm × (F_flex − F_ext)
+
+Mathematical summary (normalised lengths l̄ = l_ce / l_opt)
+----------------------------------------------------------
+Active force-length  fl(l̄) = exp(−((l̄ − 1) / KshapeActive)²)
+  • Gaussian centred at l_opt; KshapeActive = 0.45 (Thelen default)
+
+Force-velocity  (v̄ = v_ce / v_max):
+  Concentric (v̄ ≤ 0):  fv = (1 + v̄) / (1 − v̄/Af)        clipped to [0, 1]
+  Eccentric  (v̄ > 0):  c  = (2 + 2/Af) / (Flen − 1)
+                         fv = (1 + c·Flen·v̄) / (1 + c·v̄)  clipped to [1, Flen]
+
+Passive force-length (PEE, Thelen eq. 3):
+  fpe = (exp(kpe·(l̄ − 1)/e0) − 1) / (exp(kpe) − 1)  for l̄ > 1, else 0
+
+Activation dynamics (variable-τ, Thelen 2003 / OpenSim):
+  τ = τ_act   × (0.5 + 1.5·a)   if u > a   (rising)
+  τ = τ_deact / (0.5 + 1.5·a)   if u ≤ a   (falling)
+  da/dt = (u − a) / τ
 """
 
 import jax.numpy as jnp
