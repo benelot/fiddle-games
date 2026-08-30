@@ -15,15 +15,15 @@ import math
 from pathlib import Path
 
 # ── Thelen 2003 parameters ────────────────────────────────────────────────────
-F_MAX  = 20.0    # N    max isometric force
-L_OPT  = 0.12    # m    optimal CE fibre length
+F_MAX  = 50.0    # N    max isometric force  (≈5× mg so muscle can clearly lift)
+L_OPT  = 0.22    # m    optimal CE fibre length
 L_SLACK= 0.05    # m    tendon slack length (rigid tendon)
-V_MAX  = 1.2     # m/s  max shortening speed (= 10 × l_opt)
+V_MAX  = 2.2     # m/s  max shortening speed (= 10 × l_opt)
 AF     = 0.25    # Hill concentric shape constant
 FLEN   = 1.4     # eccentric force ceiling
 KSHAPE = 0.45    # Gaussian σ for fl  (Thelen KshapeActive)
-KPE    = 5.0     # PEE exponential curvature
-E0     = 0.6     # PEE strain at F_iso
+KPE    = 3.0     # PEE exponential curvature (softer than Thelen default)
+E0     = 1.5     # PEE strain at F_iso
 TAU_A  = 0.015   # s   activation rise  (Thelen)
 TAU_D  = 0.050   # s   activation decay (Thelen)
 
@@ -31,10 +31,10 @@ TAU_D  = 0.050   # s   activation decay (Thelen)
 MASS   = 1.0     # kg
 G      = 9.81    # m/s²
 Y_FLOOR= 0.55    # m below ceiling (hard floor)
-Y_INIT = 0.29    # m initial box position
+Y_INIT = 0.27    # m = L_OPT + L_SLACK: start at optimal CE length
 DT     = 0.001   # s integration timestep
 T_END  = 10.0    # s simulation duration
-FREQ   = 0.35    # Hz neural drive frequency
+FREQ   = 0.25    # Hz neural drive frequency
 
 
 # ── Thelen 2003 curve functions ───────────────────────────────────────────────
@@ -76,15 +76,15 @@ def activation_rate(u: float, a: float) -> float:
 
 def simulate() -> list[dict]:
     n = int(T_END / DT)
-    y, vy, a = Y_INIT, 0.0, 0.5
+    y, vy, a = Y_INIT, 0.0, G * MASS / F_MAX  # start at static equilibrium activation
     frames = []
     stride = 5  # record every 5 ms → 200 Hz playback
 
     for i in range(n):
         t = i * DT
 
-        # Neural drive: sinusoid offset so muscle is always partially active
-        u = 0.50 + 0.46 * math.sin(2.0 * math.pi * FREQ * t)
+        # Neural drive: full-range sinusoid [0, 1]; muscle fully off → on → off
+        u = 0.5 * (1.0 + math.sin(2.0 * math.pi * FREQ * t))
 
         # Rigid-tendon MTU kinematics
         l_mtu = y
